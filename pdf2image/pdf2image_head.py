@@ -12,23 +12,21 @@ from io import BytesIO
 from subprocess import Popen, PIPE
 from PIL import Image
 
-def convert_from_path(pdf_path, max_w=None, max_h=None, output_folder=None, first_page=None, last_page=None, fmt='ppm', thread_count=1, userpw=None):
+def convert_from_path(pdf_path, dpi=200, output_folder=None, first_page=None, last_page=None, fmt='ppm', thread_count=1, userpw=None):
     """
         Description: Convert PDF to Image will throw whenever one of the condition is reached
         Parameters:
             pdf_path -> Path to the PDF that you want to convert
-            max_w -> max width expected of output image
-            max_h -> max height expected of output image. When both are off, original image resolution used
+            dpi -> Image quality in DPI (default 200)
             output_folder -> Write the resulting images to a folder (instead of directly in memory)
             first_page -> First page to process
             last_page -> Last page to process before stopping
             fmt -> Output image format
             thread_count -> How many threads we are allowed to spawn for processing
+            userpw -> PDF's password
     """
 
     page_count = __page_count(pdf_path, userpw)
-
-    pdf_ppm_base_cmd = __get_pdfpmm_base_cmd(max_w=max_w, max_h=max_h, pdf_path=pdf_path)
 
     if thread_count < 1:
         thread_count = 1
@@ -48,35 +46,31 @@ def convert_from_path(pdf_path, max_w=None, max_h=None, output_folder=None, firs
     reminder = page_count % thread_count
     current_page = first_page
     processes = []
-    ar_args = {}
-    for tn in range(thread_count):
+    for _ in range(thread_count):
+        # A unique identifier for our files if the directory is not empty
         uid = str(uuid.uuid4())
         # Get the number of pages the thread will be processing
         thread_page_count = page_count // thread_count + int(reminder > 0)
         # Build the command accordingly
-        args, parse_buffer_func = __build_command(pdf_ppm_base_cmd, output_folder, current_page, current_page + thread_page_count - 1, fmt, uid, userpw)
+        args, parse_buffer_func = __build_command(['pdftoppm', '-r', str(dpi), pdf_path], output_folder, current_page, current_page + thread_page_count - 1, fmt, uid, userpw)
         # Update page values
         current_page = current_page + thread_page_count
         reminder -= int(reminder > 0)
         # Spawn the process and save its uuid
         processes.append((uid, Popen(args, stdout=PIPE, stderr=PIPE)))
-        ar_args[str(tn)] = args
 
     images = []
-    prefix_arr = []
-    count = 0
     for uid, proc in processes:
         data, _ = proc.communicate()
-        prefix_arr.append(uid)
 
         if output_folder is not None:
             images += __load_from_output_folder(output_folder, uid)
         else:
             images += parse_buffer_func(data)
 
-    return images, ar_args, prefix_arr
+    return images
 
-def convert_from_bytes(pdf_file, max_w=None, max_h=None, output_folder=None, first_page=None, last_page=None, fmt='ppm', thread_count=1, userpw=None):
+def convert_from_bytes(pdf_file, dpi=200, output_folder=None, first_page=None, last_page=None, fmt='ppm', thread_count=1, userpw=None):
     """
         Description: Convert PDF to Image will throw whenever one of the condition is reached
         Parameters:
@@ -93,48 +87,9 @@ def convert_from_bytes(pdf_file, max_w=None, max_h=None, output_folder=None, fir
     with tempfile.NamedTemporaryFile('wb') as f:
         f.write(pdf_file)
         f.flush()
-        return convert_from_path(f.name, max_w=max_w, max_h=max_h, output_folder=output_folder, first_page=first_page, last_page=last_page, fmt=fmt, thread_count=thread_count, userpw=userpw)
+        return convert_from_path(f.name, dpi=dpi, output_folder=output_folder, first_page=first_page, last_page=last_page, fmt=fmt, thread_count=thread_count, userpw=userpw)
 
-
-def __get_pdfpmm_base_cmd(max_w, max_h, pdf_path):
-    """
-    scale-to: scales, but ensures original aspect ratio and maximum length in either dimension
-    scale-to-x / y: scales to given width / height
-    scale-to-x / y | scale-to-y / x = -1: scales to given width / height
-    """
-    base_cmd = ['pdftoppm']
-
-    if (type(max_w) == int and max_w > 0 and
-        type(max_h) == int and max_h > 0):
-        if max_w == max_h:
-            base_cmd.append('-scale-to')
-            base_cmd.append(str(max_w))
-        else:
-            base_cmd.append('-scale-to-x')
-            base_cmd.append(str(max_w))
-            base_cmd.append('-scale-to-y')
-            base_cmd.append(str(max_h))
-    elif (type(max_w) == int and max_w > 0):
-        base_cmd.append('-scale-to-x')
-        base_cmd.append(str(max_w))
-        base_cmd.append('-scale-to-y')
-        base_cmd.append(str(-1))
-    elif (type(max_h) == int and max_h > 0):
-        base_cmd.append('-scale-to-x')
-        base_cmd.append(str(-1))
-        base_cmd.append('-scale-to-y')
-        base_cmd.append(str(str(max_h)))
-
-    base_cmd.append('-cropbox')
-    base_cmd.append(pdf_path)
-
-    return base_cmd
-
-def __build_command(base_cmd, output_folder, first_page, last_page, fmt, uid, userpw):
-    """ """
-    args = []
-    args.extend(base_cmd)
-
+def __build_command(args, output_folder, first_page, last_page, fmt, uid, userpw):
     if first_page is not None:
         args.extend(['-f', str(first_page)])
 
@@ -197,8 +152,6 @@ def __parse_buffer_to_png(data):
     return images
 
 def __page_count(pdf_path, userpw=None):
-    proc = Popen(["pdfinfo", pdf_path], stdout=PIPE, stderr=PIPE)
-    out, _ = proc.communicate()
     try:
         if userpw is not None:
             proc = Popen(["pdfinfo", pdf_path, '-upw', userpw], stdout=PIPE, stderr=PIPE)
